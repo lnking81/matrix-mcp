@@ -2,7 +2,9 @@ package config
 
 import (
 	"errors"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/ricelines/matrix-mcp/internal/scopes"
@@ -18,6 +20,7 @@ const (
 	envScopes            = "MATRIX_MCP_SCOPES"
 	envRecoveryKey       = "MATRIX_RECOVERY_KEY"
 	envAuthToken         = "MATRIX_MCP_AUTH_TOKEN"
+	envAllowNoAuth       = "MATRIX_MCP_ALLOW_UNAUTHENTICATED"
 
 	defaultListenAddr = ":8080"
 )
@@ -31,6 +34,7 @@ type Config struct {
 	E2EEDBPath        string
 	RecoveryKey       string
 	AuthToken         string
+	AllowNoAuth       bool
 	Scopes            scopes.Set
 }
 
@@ -50,6 +54,12 @@ func FromEnv() (Config, error) {
 		RecoveryKey:       strings.TrimSpace(os.Getenv(envRecoveryKey)),
 		AuthToken:         strings.TrimSpace(os.Getenv(envAuthToken)),
 		Scopes:            parsedScopes,
+	}
+	if raw := strings.TrimSpace(os.Getenv(envAllowNoAuth)); raw != "" {
+		cfg.AllowNoAuth, err = strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, errors.New(envAllowNoAuth + " must be a boolean")
+		}
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = defaultListenAddr
@@ -74,8 +84,25 @@ func (c Config) Validate() error {
 	if c.RecoveryKey != "" && c.E2EEDBPath == "" {
 		problems = append(problems, envRecoveryKey+" requires "+envE2EEDBPath)
 	}
+	// Fail closed: the endpoint acts with full account access, so it must not be
+	// reachable from other hosts without a token unless explicitly allowed.
+	if c.AuthToken == "" && !c.AllowNoAuth && c.ListenAddr != "" && !isLoopbackAddr(c.ListenAddr) {
+		problems = append(problems, envAuthToken+" is required when listening on a non-loopback address (set "+envAllowNoAuth+"=true to override)")
+	}
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
