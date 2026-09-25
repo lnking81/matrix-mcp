@@ -1,5 +1,11 @@
 # matrix-mcp
 
+> **Fork of [ricelines/matrix-mcp](https://github.com/ricelines/matrix-mcp).** Additions:
+> bearer-token auth for the HTTP endpoint (`MATRIX_MCP_AUTH_TOKEN`), one-shot device
+> cross-signing + key-backup import from a recovery key (`MATRIX_RECOVERY_KEY`), and a
+> `query`/`limit` filter plus computed `display_name` on `matrix.v1.rooms.list`.
+> Image: `ghcr.io/lnking81/matrix-mcp`.
+
 `matrix-mcp` is an MCP server for Matrix. You run it against one Matrix account, and an MCP client can then inspect rooms, users, state, and timelines on that account's behalf. The default scope set also includes the core messaging actions most agents need: sending, replying, editing, and reacting. If you enable additional scopes, it can also update the bot's own profile or presence, publish typing and read-marker state, create users, create or join rooms, invite or remove users from rooms, redact messages, and manage aliases or room-directory visibility.
 
 This server is for people who want Matrix available as a tool surface inside an MCP-capable workflow. It is not a Matrix bridge and it is not a multi-user service. Everything it does is done as the configured Matrix account.
@@ -179,6 +185,9 @@ Optional environment variables:
 - `MATRIX_MCP_LISTEN_ADDR`: listen address for the HTTP server, default `:8080`
 - `MATRIX_REGISTRATION_TOKEN`: registration token used by `matrix.v1.users.create` on homeservers that require `m.login.registration_token`
 - `MATRIX_MCP_SCOPES`: comma-separated scope list, default `default`
+- `MATRIX_E2EE_DB_PATH`: path of the SQLite crypto store; enables end-to-end encryption. Persist it: losing it means a new device
+- `MATRIX_MCP_AUTH_TOKEN`: when set, every HTTP request must carry `Authorization: Bearer <token>`; otherwise the endpoint is unauthenticated (a warning is logged)
+- `MATRIX_RECOVERY_KEY`: account recovery key (the one clients show for Secure Backup). Requires `MATRIX_E2EE_DB_PATH`. On start, the server cross-signs its own device with the cross-signing keys from secret storage and imports the latest server-side key backup, so encrypted rooms that only share keys with verified devices (e.g. mautrix bridges with `verification_levels.share: cross-signed-tofu`) and older history become readable. Set it for one start, check the log for `device … cross-signed`, then remove it
 
 Example with explicit listen address, the safe opt-in set, and additional write capabilities:
 
