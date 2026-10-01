@@ -3,7 +3,9 @@
 > **Fork of [ricelines/matrix-mcp](https://github.com/ricelines/matrix-mcp).** Additions:
 > bearer-token auth for the HTTP endpoint (`MATRIX_MCP_AUTH_TOKEN`), one-shot device
 > cross-signing + key-backup import from a recovery key (`MATRIX_RECOVERY_KEY`), and a
-> `query`/`limit` filter plus computed `display_name` on `matrix.v1.rooms.list`.
+> `query`/`limit` filter plus computed `display_name` on `matrix.v1.rooms.list`, `users.search` that also
+> finds bridged contacts, an access log, and `matrix.v1.media.download` (decrypted attachments via
+> short-lived links, images inline).
 > Image: `ghcr.io/lnking81/matrix-mcp`.
 
 `matrix-mcp` is an MCP server for Matrix. You run it against one Matrix account, and an MCP client can then inspect rooms, users, state, and timelines on that account's behalf. The default scope set also includes the core messaging actions most agents need: sending, replying, editing, and reacting. If you enable additional scopes, it can also update the bot's own profile or presence, publish typing and read-marker state, create users, create or join rooms, invite or remove users from rooms, redact messages, and manage aliases or room-directory visibility.
@@ -187,6 +189,7 @@ Optional environment variables:
 - `MATRIX_MCP_SCOPES`: comma-separated scope list, default `default`
 - `MATRIX_E2EE_DB_PATH`: path of the SQLite crypto store; enables end-to-end encryption. Persist it: losing it means a new device
 - `MATRIX_MCP_AUTH_TOKEN`: every HTTP request must carry `Authorization: Bearer <token>`. **Required** unless the listen address is loopback (`127.0.0.1:…`, `[::1]:…`, `localhost:…`) — the server refuses to start otherwise (fail closed). Generate with `openssl rand -hex 32`
+- `MATRIX_MCP_PUBLIC_URL`: externally reachable base URL of this server, e.g. `https://matrix-mcp.example.com`. `matrix.v1.media.download` issues links under `<url>/media/<token>` only when it is set. A link needs no auth header (the 256-bit token is the credential), expires after 30 minutes, and the token is redacted in the access log
 - `MATRIX_MCP_ALLOW_UNAUTHENTICATED`: `true` to run without a token on a non-loopback address anyway (e.g. behind an authenticating proxy)
 - `MATRIX_RECOVERY_KEY`: account recovery key (the one clients show for Secure Backup). Requires `MATRIX_E2EE_DB_PATH`. On start, the server cross-signs its own device with the cross-signing keys from secret storage and imports the latest server-side key backup, so encrypted rooms that only share keys with verified devices (e.g. mautrix bridges with `verification_levels.share: cross-signed-tofu`) and older history become readable. Set it for one start, check the log for `device … cross-signed`, then remove it
 
@@ -216,6 +219,7 @@ If `MATRIX_MCP_SCOPES` is empty or unset, the server enables this default set:
 - `room.members.read`
 - `room.state.read`
 - `timeline.read`
+- `media.read`
 - `messages.send`
 - `messages.reply`
 - `messages.edit`
