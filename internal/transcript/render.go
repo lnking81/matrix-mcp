@@ -191,6 +191,20 @@ func messageText(msg *matrixclient.CompactMessage) string {
 	return strings.Join(parts, " ")
 }
 
+// quoteText is messageText for a replied-to message: attachments without
+// their event ID and link.
+func quoteText(msg *matrixclient.CompactMessage) string {
+	if msg.Media == nil {
+		return messageText(msg)
+	}
+	short := *msg
+	media := *msg.Media
+	media.URL = ""
+	short.Media = &media
+	short.EventID = ""
+	return messageText(&short)
+}
+
 func mediaLabel(msg *matrixclient.CompactMessage) string {
 	kind := msg.Kind
 	if kind == "edit" {
@@ -206,7 +220,9 @@ func mediaLabel(msg *matrixclient.CompactMessage) string {
 	if msg.Media.Size > 0 && msg.Media.DurationMS == 0 {
 		label = append(label, formatSize(msg.Media.Size))
 	}
-	label = append(label, msg.EventID)
+	if msg.EventID != "" {
+		label = append(label, msg.EventID)
+	}
 	text := "[" + strings.Join(label, " ") + "]"
 	if msg.Media.URL != "" {
 		text += " " + msg.Media.URL
@@ -245,7 +261,7 @@ func replyRef(eventID string, byID map[string]*matrixclient.CompactMessage, at t
 	if tt.Format("2006-01-02") != at.Format("2006-01-02") {
 		stamp = tt.Format("02.01 15:04")
 	}
-	return stamp + " " + target.From + " «" + snippet(messageText(target)) + "»"
+	return stamp + " " + target.From + " «" + snippet(quoteText(target)) + "»"
 }
 
 func snippet(text string) string {

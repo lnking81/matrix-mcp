@@ -18,7 +18,9 @@ import (
 
 	"github.com/ricelines/matrix-mcp/internal/config"
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/crypto"
 	"maunium.net/go/mautrix/crypto/cryptohelper"
+	"maunium.net/go/mautrix/crypto/olm"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -442,6 +444,10 @@ func (s *Service) initCrypto(ctx context.Context, cfg config.Config) error {
 		_ = helper.Close()
 		return fmt.Errorf("initialize matrix crypto helper: %w", err)
 	}
+	if cfg.DisableDecryptKeyFetching {
+		helper.Machine().DisableDecryptKeyFetching = true
+		log.Printf("e2ee: device key fetching during decryption disabled (MATRIX_E2EE_DECRYPT_KEY_FETCHING=false): senders are looked up in the local store only")
+	}
 
 	if cfg.RecoveryKey != "" {
 		if err := bootstrapFromRecoveryKey(ctx, helper.Machine(), cfg.RecoveryKey); err != nil {
@@ -680,8 +686,15 @@ func (d decodedEvent) summary() EventSummary {
 // undecryptableReason turns a decryption error into a short reason without
 // the event ID prefix that decryptEvent adds.
 func undecryptableReason(evt *event.Event, err error) string {
-	if errors.Is(err, errEventContentUnavailable) {
+	switch {
+	case errors.Is(err, errEventContentUnavailable):
 		return "room key not available"
+	case errors.Is(err, olm.ErrUnknownMessageIndex):
+		// The key we hold (e.g. from the key backup) was exported at a
+		// later ratchet index than this message.
+		return "room key starts after this message"
+	case errors.Is(err, crypto.ErrDuplicateMessageIndex):
+		return "duplicate message index (possible replay)"
 	}
 	reason := err.Error()
 	for _, prefix := range []string{"decrypt event " + evt.ID.String() + " after session request: ", "decrypt event " + evt.ID.String() + ": "} {

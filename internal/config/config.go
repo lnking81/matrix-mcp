@@ -22,6 +22,7 @@ const (
 	envAuthToken         = "MATRIX_MCP_AUTH_TOKEN"
 	envAllowNoAuth       = "MATRIX_MCP_ALLOW_UNAUTHENTICATED"
 	envPublicURL         = "MATRIX_MCP_PUBLIC_URL"
+	envDecryptKeyFetch   = "MATRIX_E2EE_DECRYPT_KEY_FETCHING"
 
 	defaultListenAddr = ":8080"
 )
@@ -38,6 +39,11 @@ type Config struct {
 	AllowNoAuth       bool
 	PublicURL         string
 	Scopes            scopes.Set
+	// DisableDecryptKeyFetching stops mautrix from querying the sender's
+	// device keys (/keys/query) while decrypting each event. Default false
+	// keeps upstream behavior. Old history from devices that no longer exist
+	// otherwise costs one request per event, as there is no negative cache.
+	DisableDecryptKeyFetching bool
 }
 
 func FromEnv() (Config, error) {
@@ -63,6 +69,13 @@ func FromEnv() (Config, error) {
 		if err != nil {
 			return Config{}, errors.New(envAllowNoAuth + " must be a boolean")
 		}
+	}
+	if raw := strings.TrimSpace(os.Getenv(envDecryptKeyFetch)); raw != "" {
+		fetch, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, errors.New(envDecryptKeyFetch + " must be a boolean")
+		}
+		cfg.DisableDecryptKeyFetching = !fetch
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = defaultListenAddr

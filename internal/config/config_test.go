@@ -94,3 +94,29 @@ func TestFromEnvRequiresAuthTokenOffLoopback(t *testing.T) {
 		})
 	}
 }
+
+func TestFromEnvDecryptKeyFetching(t *testing.T) {
+	t.Setenv(envHomeserverURL, "http://example.com")
+	t.Setenv(envUsername, "bot")
+	t.Setenv(envPassword, "secret")
+	t.Setenv(envAllowNoAuth, "true")
+	t.Setenv(envListenAddr, "127.0.0.1:8080")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv() error = %v", err)
+	}
+	if cfg.DisableDecryptKeyFetching {
+		t.Fatal("key fetching must stay on by default (upstream behavior)")
+	}
+
+	t.Setenv(envDecryptKeyFetch, "false")
+	if cfg, err = FromEnv(); err != nil || !cfg.DisableDecryptKeyFetching {
+		t.Fatalf("FromEnv() = %v, %v; want key fetching disabled", cfg.DisableDecryptKeyFetching, err)
+	}
+
+	t.Setenv(envDecryptKeyFetch, "maybe")
+	if _, err = FromEnv(); err == nil {
+		t.Fatal("non-boolean value accepted")
+	}
+}

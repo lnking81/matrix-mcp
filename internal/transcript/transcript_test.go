@@ -30,6 +30,7 @@ func sampleExport() matrixclient.ExportResult {
 			{EventID: "$4", From: "Me", Kind: "deleted", TimestampMS: at(10*time.Hour + time.Minute)},
 			{EventID: "$5", From: "Me", Kind: "undecryptable", Error: "room key not available", TimestampMS: at(10*time.Hour + 2*time.Minute)},
 			{EventID: "$6", From: "Алексей", ReplyTo: "$1", Text: "late reply", TimestampMS: at(10*time.Hour + 3*time.Minute)},
+			{EventID: "$7", From: "Me", ReplyTo: "$3", Text: "heard it", TimestampMS: at(10*time.Hour + 4*time.Minute)},
 		},
 	}
 }
@@ -39,8 +40,8 @@ func TestTextTranscript(t *testing.T) {
 	out := string(Text(sampleExport(), loc, time.Date(2026, 11, 10, 9, 0, 0, 0, loc)))
 	for _, want := range []string{
 		"# Matrix room export: Алексей (WA) (!room:example.com)\n",
-		"# Period: 2026-11-09 15:58 – 2026-11-10 02:01\n",
-		"# 6 messages from 9 events. Complete: reached the start of the room.\n",
+		"# Period: 2026-11-09 15:58 – 2026-11-10 02:02\n",
+		"# 7 messages from 9 events. Complete: reached the start of the room.\n",
 		"# Senders: Me = @me:example.com; Алексей = @lid:example.com, @phone:example.com\n",
 		"# Left out: m.reaction (withdrawn) 1\n",
 		"\n== 2026-11-09 Mon ==\n[15:58] Me: line one\n    line two (edited)\n    reactions: 👍 Алексей\n",
@@ -49,6 +50,7 @@ func TestTextTranscript(t *testing.T) {
 		"[01:59] Me: [deleted]\n",
 		"[02:00] Me: [undecryptable: room key not available]\n",
 		"[02:01] Алексей (↩ 09.11 15:58 Me «line one line two (edited)»): late reply\n",
+		"[02:02] Me (↩ 01:58 Алексей «[voice 0:32]»): heard it\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("transcript lacks %q\n---\n%s", want, out)
@@ -71,14 +73,14 @@ func TestJSONL(t *testing.T) {
 		t.Fatalf("JSONL() error = %v", err)
 	}
 	lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
-	if len(lines) != 7 {
-		t.Fatalf("lines = %d, want header + 6", len(lines))
+	if len(lines) != 8 {
+		t.Fatalf("lines = %d, want header + 7", len(lines))
 	}
 	var header map[string]any
 	if err := json.Unmarshal(lines[0], &header); err != nil {
 		t.Fatalf("header: %v", err)
 	}
-	if header["room_id"] != "!room:example.com" || header["messages"] != float64(6) || header["complete"] != true || header["generated"] != "2026-11-10T01:00:00Z" {
+	if header["room_id"] != "!room:example.com" || header["messages"] != float64(7) || header["complete"] != true || header["generated"] != "2026-11-10T01:00:00Z" {
 		t.Fatalf("header = %#v", header)
 	}
 	var first map[string]any

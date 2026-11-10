@@ -3,12 +3,14 @@ package matrix
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"maunium.net/go/mautrix/crypto/cryptohelper"
+	"maunium.net/go/mautrix/crypto/olm"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -152,6 +154,17 @@ func TestMissingSessionIsWaitedForOnce(t *testing.T) {
 	}
 	if len(result.Events) != 3 || result.Events[2].DecryptionError != "room key not available" {
 		t.Fatalf("events = %#v, want three placeholders", result.Events)
+	}
+}
+
+func TestUndecryptableReasonShortensKnownErrors(t *testing.T) {
+	evt := &event.Event{ID: "$x"}
+	wrapped := fmt.Errorf("decrypt event $x: failed to decrypt megolm event: decrypt: %w (not duplicate index; received: 5, earliest known: 9)", olm.ErrUnknownMessageIndex)
+	if got := undecryptableReason(evt, wrapped); got != "room key starts after this message" {
+		t.Fatalf("reason = %q", got)
+	}
+	if got := undecryptableReason(evt, errors.New("decrypt event $x: something new")); got != "something new" {
+		t.Fatalf("reason = %q", got)
 	}
 }
 
