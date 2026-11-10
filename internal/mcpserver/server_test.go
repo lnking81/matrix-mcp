@@ -70,8 +70,11 @@ type fakeMatrix struct {
 		Room string
 		Via  []string
 	}
-	lastMessages  matrixclient.ListMessagesRequest
-	lastRelations matrixclient.ListRelationsRequest
+	lastMessages    matrixclient.ListMessagesRequest
+	lastExport      matrixclient.ExportRequest
+	compactMessages *matrixclient.CompactMessagesResult
+	export          *matrixclient.ExportResult
+	lastRelations   matrixclient.ListRelationsRequest
 }
 
 func (f *fakeMatrix) Identity() matrixclient.Identity { return f.identity }
@@ -192,6 +195,20 @@ func (f *fakeMatrix) ListMessages(ctx context.Context, req matrixclient.ListMess
 		return matrixclient.MessagesResult{}, errors.New("not found")
 	}
 	return result, nil
+}
+func (f *fakeMatrix) ListMessagesCompact(ctx context.Context, req matrixclient.ListMessagesRequest) (matrixclient.CompactMessagesResult, error) {
+	f.lastMessages = req
+	if f.compactMessages == nil {
+		return matrixclient.CompactMessagesResult{}, errors.New("not found")
+	}
+	return *f.compactMessages, nil
+}
+func (f *fakeMatrix) ExportTimeline(ctx context.Context, req matrixclient.ExportRequest) (matrixclient.ExportResult, error) {
+	f.lastExport = req
+	if f.export == nil {
+		return matrixclient.ExportResult{}, errors.New("not found")
+	}
+	return *f.export, nil
 }
 func (f *fakeMatrix) GetEvent(ctx context.Context, roomID string, eventID string) (matrixclient.EventSummary, error) {
 	key := roomID + "|" + eventID

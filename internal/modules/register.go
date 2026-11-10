@@ -8,6 +8,7 @@ import (
 	matrixclient "github.com/ricelines/matrix-mcp/internal/matrix"
 	"github.com/ricelines/matrix-mcp/internal/medialink"
 	"github.com/ricelines/matrix-mcp/internal/scopes"
+	"github.com/ricelines/matrix-mcp/internal/transcript"
 	"github.com/ricelines/matrix-mcp/internal/uploadslot"
 )
 
@@ -16,6 +17,7 @@ type Options struct {
 	PublicURL  string
 	MediaLinks *medialink.Store
 	Uploads    *uploadslot.Store
+	Exports    *transcript.Store
 }
 
 func RegisterAll(r *catalog.Registrar, matrix matrixclient.API, active scopes.Set, opts Options) {
@@ -26,6 +28,7 @@ func RegisterAll(r *catalog.Registrar, matrix matrixclient.API, active scopes.Se
 		PublicURL:   opts.PublicURL,
 		MediaLinks:  opts.MediaLinks,
 		Uploads:     opts.Uploads,
+		Exports:     opts.Exports,
 	}
 	RegisterClient(r, deps, active)
 	RegisterServer(r, deps, active)

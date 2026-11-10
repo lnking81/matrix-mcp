@@ -18,6 +18,7 @@ import (
 	"github.com/ricelines/matrix-mcp/internal/medialink"
 	"github.com/ricelines/matrix-mcp/internal/modules"
 	"github.com/ricelines/matrix-mcp/internal/scopes"
+	"github.com/ricelines/matrix-mcp/internal/transcript"
 	"github.com/ricelines/matrix-mcp/internal/uploadslot"
 )
 
@@ -35,6 +36,7 @@ type Server struct {
 	matrix  matrixclient.API
 	links   *medialink.Store
 	uploads *uploadslot.Store
+	exports *transcript.Store
 }
 
 // Options configures optional server features.
@@ -51,6 +53,10 @@ const (
 	uploadSlotTTL       = 30 * time.Minute
 	// maxPendingUploads bounds memory held by staged files (each up to 50 MB).
 	maxPendingUploads = 8
+	exportTTL         = 30 * time.Minute
+	// Rendered exports are held in memory: 64 MB each, 256 MB in all.
+	maxExportBytes      = 64 << 20
+	maxExportTotalBytes = 256 << 20
 )
 
 func NewFromConfig(ctx context.Context, cfg config.Config) (*Server, error) {
@@ -73,11 +79,12 @@ func NewWithOptions(matrix matrixclient.API, active scopes.Set, opts Options) *S
 	}
 	links := medialink.NewStore(opts.MediaLinkTTL)
 	uploads := uploadslot.NewStore(uploadSlotTTL, maxPendingUploads)
+	exports := transcript.NewStore(exportTTL, maxExportBytes, maxExportTotalBytes)
 	server := mcp.NewServer(&mcp.Implementation{Name: "matrix-mcp", Version: "0.1.0"}, nil)
 	registrar := catalog.NewRegistrar(server)
-	modules.RegisterAll(registrar, matrix, active, modules.Options{PublicURL: opts.PublicURL, MediaLinks: links, Uploads: uploads})
+	modules.RegisterAll(registrar, matrix, active, modules.Options{PublicURL: opts.PublicURL, MediaLinks: links, Uploads: uploads, Exports: exports})
 
-	result := &Server{server: server, tools: registrar.Tools(), mods: registrar.Modules(), scopes: active, matrix: matrix, links: links, uploads: uploads}
+	result := &Server{server: server, tools: registrar.Tools(), mods: registrar.Modules(), scopes: active, matrix: matrix, links: links, uploads: uploads, exports: exports}
 	result.registerResources()
 	return result
 }

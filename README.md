@@ -7,6 +7,9 @@
 > finds bridged contacts, an access log, `matrix.v1.media.download` (decrypted attachments via
 > short-lived links, images inline), and `matrix.v1.messages.send_file` (photos/documents with a caption,
 > encrypted in E2EE rooms; local files are staged through `matrix.v1.media.upload_slot` + `curl -T`).
+> Reading long history: a deleted (redacted) or undecryptable event no longer fails a whole
+> `timeline.messages.list` page; `compact: true` returns plain-text messages with edits/reactions folded
+> in; `matrix.v1.timeline.export` pages through a whole room server-side and returns a transcript link.
 > Image: `ghcr.io/lnking81/matrix-mcp`.
 
 `matrix-mcp` is an MCP server for Matrix. You run it against one Matrix account, and an MCP client can then inspect rooms, users, state, and timelines on that account's behalf. The default scope set also includes the core messaging actions most agents need: sending, replying, editing, and reacting. If you enable additional scopes, it can also update the bot's own profile or presence, publish typing and read-marker state, create users, create or join rooms, invite or remove users from rooms, redact messages, and manage aliases or room-directory visibility.
@@ -24,7 +27,7 @@ Out of the box, the server exposes agent-oriented Matrix tools for:
 - room alias resolution and room-directory visibility lookup
 - joined-member lookup
 - room state lookup
-- timeline pagination, event fetch, event context, and relation inspection
+- timeline pagination, event fetch, event context, and relation inspection; compact message listing and whole-room export
 - sending messages
 - replying to messages
 - editing messages
@@ -190,7 +193,7 @@ Optional environment variables:
 - `MATRIX_MCP_SCOPES`: comma-separated scope list, default `default`
 - `MATRIX_E2EE_DB_PATH`: path of the SQLite crypto store; enables end-to-end encryption. Persist it: losing it means a new device
 - `MATRIX_MCP_AUTH_TOKEN`: every HTTP request must carry `Authorization: Bearer <token>`. **Required** unless the listen address is loopback (`127.0.0.1:…`, `[::1]:…`, `localhost:…`) — the server refuses to start otherwise (fail closed). Generate with `openssl rand -hex 32`
-- `MATRIX_MCP_PUBLIC_URL`: externally reachable base URL of this server, e.g. `https://matrix-mcp.example.com`. `matrix.v1.media.download` issues links under `<url>/media/<token>` only when it is set. A link needs no auth header (the 256-bit token is the credential), expires after 30 minutes, and the token is redacted in the access log. It also enables `matrix.v1.media.upload_slot`: `PUT <url>/upload/<token>/[<filename>]` stages a file (up to 50 MB, at most 8 pending, 30 minutes, single use) for `matrix.v1.messages.send_file`; without it, `send_file` only takes `content_base64` (up to 2 MB)
+- `MATRIX_MCP_PUBLIC_URL`: externally reachable base URL of this server, e.g. `https://matrix-mcp.example.com`. `matrix.v1.media.download` issues links under `<url>/media/<token>` only when it is set. A link needs no auth header (the 256-bit token is the credential), expires after 30 minutes, and the token is redacted in the access log. It also enables `matrix.v1.media.upload_slot`: `PUT <url>/upload/<token>/[<filename>]` stages a file (up to 50 MB, at most 8 pending, 30 minutes, single use) for `matrix.v1.messages.send_file`; without it, `send_file` only takes `content_base64` (up to 2 MB). It also enables `matrix.v1.timeline.export` links, `<url>/export/<token>` (30 minutes, no auth header, held in memory: 64 MB per export, 256 MB in all); without it, the export is only available with `inline: true` (up to 256 KB)
 - `MATRIX_MCP_ALLOW_UNAUTHENTICATED`: `true` to run without a token on a non-loopback address anyway (e.g. behind an authenticating proxy)
 - `MATRIX_RECOVERY_KEY`: account recovery key (the one clients show for Secure Backup). Requires `MATRIX_E2EE_DB_PATH`. On start, the server cross-signs its own device with the cross-signing keys from secret storage and imports the latest server-side key backup, so encrypted rooms that only share keys with verified devices (e.g. mautrix bridges with `verification_levels.share: cross-signed-tofu`) and older history become readable. Set it for one start, check the log for `device … cross-signed`, then remove it
 
@@ -281,7 +284,7 @@ The server currently exposes tools under these module groups:
 - `rooms`: list joined rooms, inspect or preview a room, and, when the corresponding scopes are enabled, set typing or read markers, resolve or manage room aliases, inspect or manage room-directory visibility, create or join rooms, invite users, and leave rooms
 - `room.members`: list or fetch joined members in a room
 - `room.state`: fetch one state event or list visible state in a room
-- `timeline`: paginate messages, fetch an event, inspect context around an event, list relations such as reactions or edits
+- `timeline`: paginate messages, fetch an event, inspect context around an event, list relations such as reactions or edits. `matrix.v1.timeline.messages.list` options (all off by default, which keeps upstream behavior): `compact` (message events only, `body` without the HTML copy, edits and reactions folded into their target, reply fallback stripped, media as metadata, sender display names, times in `timezone`), `include_undecryptable` (placeholders with `decryption_error` instead of skipping). Deleted events come back with `redacted: true` instead of failing the page. `matrix.v1.timeline.export` reads a whole room (or `since`/`until`) and returns a text transcript or JSONL behind a link
 - `messages`: send, reply, edit, react, and redact when the corresponding scopes are enabled
 
 The exact tool names are discoverable from the MCP server itself. The intended flow is:

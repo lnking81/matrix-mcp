@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"slices"
@@ -33,6 +34,8 @@ const (
 	roomListConcurrency            = 8
 	roomListCacheTTL               = 2 * time.Minute
 	memberIndexCacheTTL            = 5 * time.Minute
+	sessionWaitTimeout             = 5 * time.Second
+	missingSessionRetry            = 10 * time.Minute
 	maxSharedRoomIDs               = 10
 )
 
@@ -116,6 +119,12 @@ type EventSummary struct {
 	TimestampMS int64          `json:"timestamp_ms,omitempty"`
 	Content     map[string]any `json:"content,omitempty"`
 	Redacts     string         `json:"redacts,omitempty"`
+	// Redacted marks a deleted event: the homeserver has stripped its content.
+	Redacted   bool   `json:"redacted,omitempty" jsonschema:"The event was deleted (redacted); its content is gone"`
+	RedactedBy string `json:"redacted_by,omitempty" jsonschema:"User who deleted the event"`
+	// DecryptionError is set on placeholders for encrypted events that could
+	// not be decrypted (only returned when include_undecryptable is set).
+	DecryptionError string `json:"decryption_error,omitempty" jsonschema:"Why an encrypted event could not be decrypted; its content is omitted"`
 }
 
 type CreateRoomRequest struct {
@@ -249,6 +258,11 @@ type ListMessagesRequest struct {
 	To        string
 	Direction string
 	Limit     int
+	// IncludeUndecryptable returns encrypted events that cannot be decrypted
+	// as placeholders with DecryptionError instead of skipping them.
+	IncludeUndecryptable bool
+	// Location is the time zone of compact message times (UTC when nil).
+	Location *time.Location
 }
 
 type MessagesResult struct {
@@ -306,6 +320,8 @@ type API interface {
 	GetStateEvent(context.Context, string, string, string) (EventSummary, error)
 	ListStateEvents(context.Context, string) ([]EventSummary, error)
 	ListMessages(context.Context, ListMessagesRequest) (MessagesResult, error)
+	ListMessagesCompact(context.Context, ListMessagesRequest) (CompactMessagesResult, error)
+	ExportTimeline(context.Context, ExportRequest) (ExportResult, error)
 	GetEvent(context.Context, string, string) (EventSummary, error)
 	GetEventContext(context.Context, string, string, int) (EventContextResult, error)
 	ListRelations(context.Context, ListRelationsRequest) (RelationsResult, error)
@@ -349,6 +365,11 @@ type Service struct {
 	membersMu       sync.Mutex
 	membersCache    map[id.UserID]*roomMember
 	membersCachedAt time.Time
+
+	// missingSessions remembers megolm sessions a key request did not bring
+	// in, so events of the same session do not each wait for it again.
+	missingMu       sync.Mutex
+	missingSessions map[id.SessionID]time.Time
 }
 
 // roomMember is one user seen across the account's joined rooms.
@@ -555,8 +576,12 @@ func (s *Service) decryptEvent(ctx context.Context, evt *event.Event) (*event.Ev
 	}
 
 	content := evt.Content.AsEncrypted()
+	if s.sessionRecentlyMissing(content.SessionID) {
+		return nil, errEventContentUnavailable
+	}
 	go s.cryptoHelper.RequestSession(context.Background(), evt.RoomID, content.SenderKey, content.SessionID, evt.Sender, content.DeviceID)
-	if !s.cryptoHelper.WaitForSession(ctx, evt.RoomID, content.SenderKey, content.SessionID, 5*time.Second) {
+	if !s.cryptoHelper.WaitForSession(ctx, evt.RoomID, content.SenderKey, content.SessionID, sessionWaitTimeout) {
+		s.markSessionMissing(content.SessionID)
 		return nil, errEventContentUnavailable
 	}
 
@@ -591,31 +616,176 @@ func ensureParsedEventContent(evt *event.Event) error {
 	return err
 }
 
-func (s *Service) summarizeEvent(ctx context.Context, evt *event.Event) (EventSummary, error) {
-	decrypted, err := s.decryptEvent(ctx, evt)
-	if err != nil {
-		return EventSummary{}, err
-	}
-	return summarizeEvent(decrypted), nil
+// sessionRecentlyMissing reports whether a key request for the session
+// already timed out within missingSessionRetry. Decryption is still tried
+// first every time, so a key that arrives later is used.
+func (s *Service) sessionRecentlyMissing(sessionID id.SessionID) bool {
+	s.missingMu.Lock()
+	defer s.missingMu.Unlock()
+	at, ok := s.missingSessions[sessionID]
+	return ok && time.Since(at) < missingSessionRetry
 }
 
-func (s *Service) summarizeEvents(ctx context.Context, events []*event.Event) ([]EventSummary, error) {
-	result := make([]EventSummary, 0, len(events))
+func (s *Service) markSessionMissing(sessionID id.SessionID) {
+	s.missingMu.Lock()
+	defer s.missingMu.Unlock()
+	if s.missingSessions == nil {
+		s.missingSessions = make(map[id.SessionID]time.Time)
+	}
+	now := time.Now()
+	for key, at := range s.missingSessions {
+		if now.Sub(at) >= missingSessionRetry {
+			delete(s.missingSessions, key)
+		}
+	}
+	s.missingSessions[sessionID] = now
+}
+
+// decodedEvent is a timeline event after decryption, or the original event
+// with the reason it has no readable content.
+type decodedEvent struct {
+	evt        *event.Event
+	redacted   bool
+	redactedBy string
+	decryptErr error
+}
+
+// decodeEvent decrypts an event. Redacted events are returned as they are:
+// the homeserver has stripped their content, so there is nothing to decrypt
+// (an encrypted one has lost even its algorithm and would fail).
+func (s *Service) decodeEvent(ctx context.Context, evt *event.Event) decodedEvent {
+	if because := evt.Unsigned.RedactedBecause; because != nil {
+		return decodedEvent{evt: evt, redacted: true, redactedBy: because.Sender.String()}
+	}
+	decrypted, err := s.decryptEvent(ctx, evt)
+	if err != nil {
+		return decodedEvent{evt: evt, decryptErr: err}
+	}
+	return decodedEvent{evt: decrypted}
+}
+
+func (d decodedEvent) summary() EventSummary {
+	if d.decryptErr != nil {
+		summary := summarizeEvent(d.evt)
+		summary.Content = nil
+		summary.DecryptionError = undecryptableReason(d.evt, d.decryptErr)
+		return summary
+	}
+	summary := summarizeEvent(d.evt)
+	summary.Redacted = d.redacted
+	summary.RedactedBy = d.redactedBy
+	return summary
+}
+
+// undecryptableReason turns a decryption error into a short reason without
+// the event ID prefix that decryptEvent adds.
+func undecryptableReason(evt *event.Event, err error) string {
+	if errors.Is(err, errEventContentUnavailable) {
+		return "room key not available"
+	}
+	reason := err.Error()
+	for _, prefix := range []string{"decrypt event " + evt.ID.String() + " after session request: ", "decrypt event " + evt.ID.String() + ": "} {
+		reason = strings.TrimPrefix(reason, prefix)
+	}
+	return reason
+}
+
+// undecryptableLog collects the events of one call that could not be
+// decrypted and logs them as one line (event IDs and reasons, no content).
+type undecryptableLog struct {
+	roomID   string
+	included bool
+	reasons  map[string][]string
+	order    []string
+	total    int
+}
+
+func (l *undecryptableLog) add(reason, eventID string) {
+	if l.reasons == nil {
+		l.reasons = make(map[string][]string)
+	}
+	if _, ok := l.reasons[reason]; !ok {
+		l.order = append(l.order, reason)
+	}
+	l.reasons[reason] = append(l.reasons[reason], eventID)
+	l.total++
+}
+
+func (l *undecryptableLog) flush() {
+	if l.total == 0 {
+		return
+	}
+	const maxIDs = 5
+	parts := make([]string, 0, len(l.order))
+	for _, reason := range l.order {
+		ids := l.reasons[reason]
+		shown := ids
+		if len(shown) > maxIDs {
+			shown = shown[:maxIDs]
+		}
+		part := fmt.Sprintf("%s x%d: %s", reason, len(ids), strings.Join(shown, " "))
+		if len(ids) > maxIDs {
+			part += " ..."
+		}
+		parts = append(parts, part)
+	}
+	action := "skipped"
+	if l.included {
+		action = "returned as placeholders"
+	}
+	log.Printf("timeline: %s: %d undecryptable events %s (%s)", l.roomID, l.total, action, strings.Join(parts, "; "))
+}
+
+// decodeEvents decrypts a batch. Events that cannot be decrypted are dropped
+// unless includeUndecryptable is set; either way they are logged.
+func (s *Service) decodeEvents(ctx context.Context, roomID string, events []*event.Event, includeUndecryptable bool) []decodedEvent {
+	logged := undecryptableLog{roomID: roomID, included: includeUndecryptable}
+	defer logged.flush()
+	result := make([]decodedEvent, 0, len(events))
 	for _, evt := range events {
 		if evt == nil {
 			continue
 		}
-		summary, err := s.summarizeEvent(ctx, evt)
-		if err != nil {
-			if errors.Is(err, errEventContentUnavailable) {
+		decoded := s.decodeEvent(ctx, evt)
+		if decoded.decryptErr != nil {
+			logged.add(undecryptableReason(evt, decoded.decryptErr), evt.ID.String())
+			if !includeUndecryptable {
 				continue
 			}
-			return nil, err
 		}
-		result = append(result, summary)
+		result = append(result, decoded)
+	}
+	return result
+}
+
+// summarizeEvent summarizes one event. Unlike lists, a single event that
+// cannot be decrypted is an error.
+func (s *Service) summarizeEvent(ctx context.Context, evt *event.Event) (EventSummary, error) {
+	decoded := s.decodeEvent(ctx, evt)
+	if decoded.decryptErr != nil {
+		return EventSummary{}, decoded.decryptErr
+	}
+	return decoded.summary(), nil
+}
+
+// summarizeEvents summarizes a batch, skipping events that cannot be
+// decrypted. One bad event must not fail the whole page: the caller would
+// lose the pagination token and could never get past it.
+func (s *Service) summarizeEvents(ctx context.Context, events []*event.Event) ([]EventSummary, error) {
+	return s.summarizeEventList(ctx, "", events, false), nil
+}
+
+func (s *Service) summarizeEventList(ctx context.Context, roomID string, events []*event.Event, includeUndecryptable bool) []EventSummary {
+	if roomID == "" && len(events) > 0 && events[0] != nil {
+		roomID = events[0].RoomID.String()
+	}
+	decoded := s.decodeEvents(ctx, roomID, events, includeUndecryptable)
+	result := make([]EventSummary, 0, len(decoded))
+	for _, d := range decoded {
+		result = append(result, d.summary())
 	}
 	sortEvents(result)
-	return result, nil
+	return result
 }
 
 func (s *Service) ensureRoomSendState(ctx context.Context, roomID id.RoomID) error {
@@ -1171,14 +1341,8 @@ func (s *Service) ListMessages(ctx context.Context, req ListMessagesRequest) (Me
 	if err != nil {
 		return MessagesResult{}, fmt.Errorf("list room messages: %w", err)
 	}
-	events, err := s.summarizeEvents(ctx, resp.Chunk)
-	if err != nil {
-		return MessagesResult{}, fmt.Errorf("summarize room messages: %w", err)
-	}
-	stateEvents, err := s.summarizeEvents(ctx, resp.State)
-	if err != nil {
-		return MessagesResult{}, fmt.Errorf("summarize room message state: %w", err)
-	}
+	events := s.summarizeEventList(ctx, req.RoomID, resp.Chunk, req.IncludeUndecryptable)
+	stateEvents := s.summarizeEventList(ctx, req.RoomID, resp.State, false)
 	return MessagesResult{
 		Start:  resp.Start,
 		End:    resp.End,
